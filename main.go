@@ -11,7 +11,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "Xena dAccs client"
 	app.Version = "0.1"
-	app.Copyright = "(c) 2019  Swiss Capital Ltd"
+	app.Copyright = "Copyright (c) 2019 Xena Financial Systems"
 	app.Usage = "control your funds directly while accessing the speed and liquidity inherent to centralized exchanges"
 	// Common flags
 	app.Flags = []cli.Flag{

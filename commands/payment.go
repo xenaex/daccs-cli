@@ -92,6 +92,11 @@ func paymentSend(c *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("Error %s on getting active channels", err)
 	}
+
+	if len(channels) == 0 {
+		return fmt.Errorf("Opened channels not found")
+	}
+
 	nodeCapacity := make(map[string]decimal.Decimal)
 	totalCapacity := decimal.Zero
 	for _, c := range channels {

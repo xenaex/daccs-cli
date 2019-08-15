@@ -29,6 +29,9 @@ const (
 	defaultGRPCTimeout = 5 * time.Second
 	defaultWaitUnlock  = 5 * time.Second
 	defaultCSVDelay    = 288 // ~48 hours
+
+	recreateAfterUnlockAttemptsCount = 5
+	recreateAfterUnlockInterval      = time.Second
 )
 
 // ChannelStatus descriptor
@@ -148,26 +151,48 @@ func NewLndClient(c *cli.Context, unlocked bool) (LndClient, error) {
 		_, err = client.GetInfo(ctx, &lnrpc.GetInfoRequest{})
 		if err != nil {
 			s, ok := status.FromError(err)
-			if ok {
-				if s.Code() == codes.Unimplemented {
-					fmt.Println("Local LND node is locked")
-					fmt.Printf("Input unlock password: ")
-					pwd, err := terminal.ReadPassword(int(syscall.Stdin))
-					if err != nil {
-						return nil, err
-					}
-					fmt.Println()
-					ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
-					defer cancel()
-					_, err = walletUnlocker.UnlockWallet(ctx, &lnrpc.UnlockWalletRequest{WalletPassword: ([]byte)(pwd)})
-					if err != nil {
-						return nil, fmt.Errorf("Error %s on unlocking lnd node", err)
-					}
-				} else {
+			if !ok {
+				return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
+			}
+			if s.Code() != codes.Unimplemented {
+				return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
+			}
+
+			fmt.Println("Local LND node is locked")
+			fmt.Printf("Input unlock password: ")
+			pwd, err := terminal.ReadPassword(int(syscall.Stdin))
+			if err != nil {
+				return nil, err
+			}
+			fmt.Println()
+
+			ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+			defer cancel()
+
+			_, err = walletUnlocker.UnlockWallet(ctx, &lnrpc.UnlockWalletRequest{WalletPassword: ([]byte)(pwd)})
+			if err != nil {
+				return nil, fmt.Errorf("Error %s on unlocking lnd node", err)
+			}
+
+			// Wait until lnd rpc server is ready, recreate client and test with GetInfo()
+			// Otherwise rpc client will reply "Unimplemented" for every request
+			for i := 0; i < recreateAfterUnlockAttemptsCount; i++ {
+				time.Sleep(recreateAfterUnlockInterval)
+				conn.Close()
+				conn, err = grpc.Dial(lndHost, opts...)
+				if err != nil {
 					return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
 				}
-			} else {
-				return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
+				client = lnrpc.NewLightningClient(conn)
+				ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+				defer cancel()
+				_, err = client.GetInfo(ctx, &lnrpc.GetInfoRequest{})
+				if err == nil {
+					break
+				}
+			}
+			if err != nil {
+				return nil, err
 			}
 		}
 	}

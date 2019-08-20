@@ -68,8 +68,8 @@ func paymentSend(c *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("Invalid amount value")
 	}
-	if amount.LessThanOrEqual(decimal.Zero) {
-		return fmt.Errorf("Amount should be greater than zero")
+	if amount.LessThan(minChannelPayment) {
+		return fmt.Errorf("Amount should be greater or equal to min payment amount %s", minChannelPayment)
 	}
 
 	restcli, err := clients.NewRestClient(c)
@@ -81,53 +81,63 @@ func paymentSend(c *cli.Context) error {
 		return err
 	}
 
-	// Request API for invoices to pay
-	invoices, err := restcli.IssueInvoices(account)
-	if err != nil {
-		return fmt.Errorf("Error %s on getting invoices to pay", err)
-	}
-
-	// Distribute amount between channels proportional to their free capacity
+	// Get active channels from lnd node
 	channels, err := lncli.ActiveChannels()
 	if err != nil {
 		return fmt.Errorf("Error %s on getting active channels", err)
 	}
-
 	if len(channels) == 0 {
 		return fmt.Errorf("Opened channels not found")
 	}
 
-	nodeCapacity := make(map[string]decimal.Decimal)
-	totalCapacity := decimal.Zero
-	for _, c := range channels {
-		nodeCapacity[c.Node] = nodeCapacity[c.Node].Add(c.LocalBalance)
-		totalCapacity = totalCapacity.Add(c.LocalBalance)
+	// Distribute amount between channels proportionally to their free capacity
+	channelsSelector := NewChannelsSelector(satoshiPrecision)
+	channelPayments, err := channelsSelector.Select(amount, channels)
+	if err != nil {
+		return fmt.Errorf("Error %s on channelsSelector.SelectChannels(%s, %v)", err, amount, channels)
 	}
-	paymentAmounts := make(map[string]decimal.Decimal)
-	amountLeft := amount
-	for i, inv := range invoices {
-		ca := amount.Mul(nodeCapacity[inv.NodeID].Div(totalCapacity))
-		paymentAmounts[inv.NodeID] = ca
-		if i < len(invoices)-1 {
-			amountLeft = amountLeft.Sub(ca)
-		} else {
-			paymentAmounts[inv.NodeID] = amountLeft
-		}
+	if len(channelPayments) == 0 {
+		return fmt.Errorf("No channels for payment were selected")
+	}
+
+	// Request API for invoices for selected channels
+	channelPoints := []string{}
+	for _, c := range channelPayments {
+		channelPoints = append(channelPoints, c.ChannelPoint)
+	}
+	invoices, err := restcli.IssueInvoices(account, channelPoints)
+	if err != nil {
+		return fmt.Errorf("Error %s on getting invoices to pay", err)
+	}
+	invoicesByPoint := map[string]clients.Invoice{}
+	for _, i := range invoices {
+		invoicesByPoint[i.ChanPoint] = i
 	}
 
 	// Send payments
-	errors := []Error{}
-	for _, i := range invoices {
-		a := paymentAmounts[i.NodeID]
-		err := lncli.SendPayment(i.PaymentRequest, a)
+	result := PaymentResult{}
+	for _, cp := range channelPayments {
+		inv, ok := invoicesByPoint[cp.ChannelPoint]
+		if !ok {
+			cp.Error = fmt.Sprintf("Invoice for channel %s not found in API response", cp.ChannelPoint)
+			result.Errors = append(result.Errors, cp)
+			continue
+		}
+
+		err := lncli.SendPayment(inv.PaymentRequest, cp.AmountToPay, cp.ID)
 		if err != nil {
-			err = fmt.Errorf("Error %s on sending payment on %s to %s", err, a, i.NodeID)
-			errors = append(errors, Error{Error: err.Error()})
+			err = fmt.Errorf("Error %s on sending payment on %s to %s %s", err, cp.AmountToPay, inv.NodeID, cp.ChannelPoint)
+			cp.Error = err.Error()
+			result.Errors = append(result.Errors, cp)
+		} else {
+			result.Successful = append(result.Successful, cp)
 		}
 	}
-	if len(errors) > 0 {
-		ResponseError(errors)
+
+	if len(result.Errors) > 0 {
+		ResponseError(result)
 		os.Exit(1)
 	}
+	ResponseJSON(result)
 	return nil
 }

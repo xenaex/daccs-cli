@@ -86,7 +86,7 @@ type LndClient interface {
 	// CloseChannel with specified channel point
 	CloseChannel(chanID uint64, chanPoint string) (*ChannelStatus, error)
 	// SendPayment by specified payment request on specified amount
-	SendPayment(paymentReq string, amount decimal.Decimal) error
+	SendPayment(paymentReq string, amount decimal.Decimal, chanID uint64) error
 	// Payments list
 	Payments(offset, limit int) ([]Payment, error)
 	// Close gRPC connection
@@ -470,12 +470,13 @@ func (c *lndClient) CloseChannel(chanID uint64, chanPoint string) (*ChannelStatu
 }
 
 // SendPayment by specified payment request on specified amount
-func (c *lndClient) SendPayment(paymentReq string, amount decimal.Decimal) error {
+func (c *lndClient) SendPayment(paymentReq string, amount decimal.Decimal, chanID uint64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
 	defer cancel()
 	resp, err := c.client.SendPaymentSync(ctx, &lnrpc.SendRequest{
 		PaymentRequest: paymentReq,
 		Amt:            btcToSatoshi(amount),
+		OutgoingChanId: chanID,
 	})
 	if err != nil {
 		return err

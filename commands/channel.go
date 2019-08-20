@@ -14,7 +14,9 @@ import (
 var (
 	minChannelCapacity      = decimal.New(1, -3) // 0.001 BTC
 	defaultChannelFee       = decimal.New(1, -3) // 0.001 BTC
+	minChannelPayment       = decimal.New(1, -8) // 0.0000001 BTC
 	channelFundingPrecision = int32(3)
+	satoshiPrecision        = int32(8)
 )
 
 // Channel commands definition

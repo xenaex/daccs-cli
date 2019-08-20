@@ -17,6 +17,7 @@ require (
 	github.com/roasbeef/btcutil v0.0.0-20180406014609-dfb640c57141 // indirect
 	github.com/roasbeef/btcwallet v0.0.0-20180426223453-30affec83c18 // indirect
 	github.com/shopspring/decimal v0.0.0-20180709203117-cd690d0c9e24
+	github.com/stretchr/testify v1.2.2
 	github.com/urfave/cli v1.20.0
 	golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2
 	golang.org/x/net v0.0.0-20190628185345-da137c7871d7 // indirect

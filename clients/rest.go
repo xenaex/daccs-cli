@@ -30,7 +30,7 @@ type RestClient interface {
 	// RemoteAddresses of Xena lnd nodes to connect to
 	RemoteAddresses() ([]string, error)
 	// IssueInvoices to pay via available channels
-	IssueInvoices(accountID int64) ([]Invoice, error)
+	IssueInvoices(accountID int64, chanPoints []string) ([]Invoice, error)
 }
 
 // restClient implementation
@@ -111,11 +111,11 @@ func (c *restClient) RemoteAddresses() ([]string, error) {
 	return res, nil
 }
 
-// IssueInvoices to pay via available channels
-func (c *restClient) IssueInvoices(accountID int64) ([]Invoice, error) {
+// IssueInvoices to pay via specified channels
+func (c *restClient) IssueInvoices(accountID int64, chanPoints []string) ([]Invoice, error) {
 	req := invoiceRequest{
-		AccountID:  accountID,
 		ExternalID: time.Now().UTC().String(),
+		ChanPoints: chanPoints,
 	}
 	respData, err := c.call(fmt.Sprintf("accounts/%d/invoices", accountID), "POST", &req)
 	if err != nil {
@@ -208,14 +208,15 @@ type address struct {
 
 // invoiceRequest message
 type invoiceRequest struct {
-	AccountID  int64  `json:"AccountID"`
-	ExternalID string `json:"ExternalID"`
+	ExternalID string   `json:"externalId"`
+	ChanPoints []string `json:"chanPoints"`
 }
 
 // Invoice message
 type Invoice struct {
 	NodeID         string `json:"nodeId"`
 	PaymentRequest string `json:"paymentRequest"`
+	ChanPoint      string `json:"chanPoint"`
 }
 
 // error message

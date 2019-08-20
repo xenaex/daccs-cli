@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
@@ -80,14 +81,27 @@ func paymentSend(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	addrs, err := restcli.RemoteAddresses()
+	if err != nil {
+		return fmt.Errorf("Error %s on getting RemoteAddresses", err)
+	}
 
-	// Get active channels from lnd node
-	channels, err := lncli.ActiveChannels()
+	// Get active channels from lnd node and filter with known remote nodes
+	allChannels, err := lncli.ActiveChannels()
 	if err != nil {
 		return fmt.Errorf("Error %s on getting active channels", err)
 	}
+	channels := make([]*clients.ChannelStatus, 0, len(allChannels))
+	for _, c := range allChannels {
+		for _, a := range addrs {
+			if strings.Contains(a, c.Node) {
+				channels = append(channels, c)
+				break
+			}
+		}
+	}
 	if len(channels) == 0 {
-		return fmt.Errorf("Opened channels not found")
+		return fmt.Errorf("Opened channels with known remote nodes not found")
 	}
 
 	// Distribute amount between channels proportionally to their free capacity

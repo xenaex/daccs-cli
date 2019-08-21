@@ -11,10 +11,7 @@ import (
 	"github.com/xenaex/daccs-cli/clients"
 )
 
-var (
-	minChannelCapacity      = decimal.New(1, -3) // 0.001 BTC
-	defaultChannelFee       = decimal.New(1, -3) // 0.001 BTC
-	minChannelPayment       = decimal.New(1, -8) // 0.0000001 BTC
+const (
 	channelFundingPrecision = int32(3)
 	satoshiPrecision        = int32(8)
 )
@@ -72,14 +69,10 @@ func channelOpen(c *cli.Context) error {
 		return nil
 	}
 
-	// Parse and validate capacity
-	// TODO: get limits from API
+	// Parse capacity
 	capacity, err := decimal.NewFromString(c.String("capacity"))
 	if err != nil {
 		return fmt.Errorf("Invalid capacity value")
-	}
-	if capacity.LessThan(minChannelCapacity) {
-		return fmt.Errorf("Capacity should be greater than or equal %s", minChannelCapacity)
 	}
 
 	restcli, err := clients.NewRestClient(c)
@@ -89,6 +82,15 @@ func channelOpen(c *cli.Context) error {
 	lncli, err := clients.NewLndClient(c, true)
 	if err != nil {
 		return err
+	}
+
+	// Get limits from API and validate capacity
+	limits, err := restcli.Limits()
+	if err != nil {
+		return fmt.Errorf("Error %s on getting Limits", err)
+	}
+	if capacity.LessThan(limits.MinChannelCapacity) {
+		return fmt.Errorf("Capacity should be greater than or equal %s", limits.MinChannelCapacity)
 	}
 
 	// Ensure lnd node registration & obtain endpoints to connect to
@@ -110,15 +112,14 @@ func channelOpen(c *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("Error %s on getting node balance", err)
 	}
-	totalFees := defaultChannelFee.Mul(decimal.New(int64(len(addrs)), 0))
-	if nodeBalance.LessThan(capacity.Add(totalFees)) {
+	if nodeBalance.LessThan(capacity) {
 		// Get address for deposit
 		addr, err := lncli.FundingAddress()
 		if err != nil {
 			return fmt.Errorf("Error %s on getting LND wallet deposit address", err)
 		}
-		return fmt.Errorf("Insufficient LND wallet funds (%s) to open channel for %s (+ %s fees). Please deposit at least %s to %s",
-			nodeBalance, capacity, totalFees, capacity.Add(totalFees).Sub(nodeBalance), addr)
+		return fmt.Errorf("Insufficient LND wallet funds (%s) to open channel for %s. Please deposit at least %s to %s",
+			nodeBalance, capacity, capacity.Sub(nodeBalance), addr)
 	}
 
 	// Ensure lnd node connections

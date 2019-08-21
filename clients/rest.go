@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
 )
 
@@ -31,6 +32,8 @@ type RestClient interface {
 	RemoteAddresses() ([]string, error)
 	// IssueInvoices to pay via available channels
 	IssueInvoices(accountID int64, chanPoints []string) ([]Invoice, error)
+	// Limits returns daccs limits
+	Limits() (*Limits, error)
 }
 
 // restClient implementation
@@ -129,6 +132,20 @@ func (c *restClient) IssueInvoices(accountID int64, chanPoints []string) ([]Invo
 	return resp, nil
 }
 
+// Limits returns daccs limits
+func (c *restClient) Limits() (*Limits, error) {
+	respData, err := c.call("limits", "GET", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp := &Limits{}
+	err = json.Unmarshal(respData, resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // call Xena dAccs API with authentication
 func (c *restClient) call(path, method string, request interface{}) ([]byte, error) {
 	// Request URL
@@ -217,6 +234,12 @@ type Invoice struct {
 	NodeID         string `json:"nodeId"`
 	PaymentRequest string `json:"paymentRequest"`
 	ChanPoint      string `json:"chanPoint"`
+}
+
+// Limits message
+type Limits struct {
+	MinChannelCapacity decimal.Decimal `json:"minChannelCapacity"`
+	MinPaymentAmount   decimal.Decimal `json:"minPaymentAmount"`
 }
 
 // error message

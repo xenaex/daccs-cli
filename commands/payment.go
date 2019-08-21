@@ -60,7 +60,6 @@ func paymentSend(c *cli.Context) error {
 	}
 
 	// Parse and validate account and amount
-	// TODO: get limits from API
 	account := c.Int64("account")
 	if account <= 0 {
 		return fmt.Errorf("Invalid account")
@@ -68,9 +67,6 @@ func paymentSend(c *cli.Context) error {
 	amount, err := decimal.NewFromString(c.String("amount"))
 	if err != nil {
 		return fmt.Errorf("Invalid amount value")
-	}
-	if amount.LessThan(minChannelPayment) {
-		return fmt.Errorf("Amount should be greater or equal to min payment amount %s", minChannelPayment)
 	}
 
 	restcli, err := clients.NewRestClient(c)
@@ -81,15 +77,24 @@ func paymentSend(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	addrs, err := restcli.RemoteAddresses()
+
+	// Get min payment amount from API
+	limits, err := restcli.Limits()
 	if err != nil {
-		return fmt.Errorf("Error %s on getting RemoteAddresses", err)
+		return fmt.Errorf("Error %s on getting Limits", err)
+	}
+	if amount.LessThan(limits.MinPaymentAmount) {
+		return fmt.Errorf("Amount should be greater or equal to min payment amount %s", limits.MinPaymentAmount)
 	}
 
 	// Get active channels from lnd node and filter with known remote nodes
 	allChannels, err := lncli.ActiveChannels()
 	if err != nil {
 		return fmt.Errorf("Error %s on getting active channels", err)
+	}
+	addrs, err := restcli.RemoteAddresses()
+	if err != nil {
+		return fmt.Errorf("Error %s on getting RemoteAddresses", err)
 	}
 	channels := make([]*clients.ChannelStatus, 0, len(allChannels))
 	for _, c := range allChannels {
@@ -105,13 +110,19 @@ func paymentSend(c *cli.Context) error {
 	}
 
 	// Distribute amount between channels proportionally to their free capacity
-	channelsSelector := NewChannelsSelector(satoshiPrecision)
-	channelPayments, err := channelsSelector.Select(amount, channels)
+	channelsSelector := NewChannelsSelector(limits.MinPaymentAmount, satoshiPrecision)
+	channelPayments, err := channelsSelector.FundPayment(amount, channels)
 	if err != nil {
-		return fmt.Errorf("Error %s on channelsSelector.SelectChannels(%s, %v)", err, amount, channels)
+		fundErr := FundChannelsError{
+			ErrorMessage:     err.Error(),
+			MinPaymentAmount: limits.MinPaymentAmount.String(),
+			FundingChannels:  channels,
+		}
+		ResponseError(fundErr)
+		os.Exit(1)
 	}
 	if len(channelPayments) == 0 {
-		return fmt.Errorf("No channels for payment were selected")
+		return fmt.Errorf("No channels for payment were funded")
 	}
 
 	// Request API for invoices for selected channels
@@ -138,9 +149,9 @@ func paymentSend(c *cli.Context) error {
 			continue
 		}
 
-		err := lncli.SendPayment(inv.PaymentRequest, cp.AmountToPay, cp.ID)
+		err := lncli.SendPayment(inv.PaymentRequest, cp.Amount, cp.ID)
 		if err != nil {
-			err = fmt.Errorf("Error %s on sending payment on %s to %s %s", err, cp.AmountToPay, inv.NodeID, cp.ChannelPoint)
+			err = fmt.Errorf("Error %s on sending payment on %s to %s %s", err, cp.Amount, inv.NodeID, cp.ChannelPoint)
 			cp.Error = err.Error()
 			result.Errors = append(result.Errors, cp)
 		} else {

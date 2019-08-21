@@ -16,8 +16,8 @@ type testCase struct {
 	expectedErr string
 }
 
-func (c testCase) RunSuccess(t *testing.T) {
-	selected, err := selector().Select(c.amount, c.channels)
+func (c testCase) Run(t *testing.T) {
+	selected, err := selector().FundPayment(c.amount, c.channels)
 	assert.Nil(t, err)
 	assert.Len(t, selected, len(c.expected))
 
@@ -31,57 +31,74 @@ func (c testCase) RunSuccess(t *testing.T) {
 		if assert.True(t, ok) {
 			assert.Equal(t, expected.ID, actual.ID)
 			assert.Equal(t, expected.ChannelPoint, actual.ChannelPoint)
-			assert.Equal(t, expected.AmountToPay.String(), actual.AmountToPay.String())
+			assert.Equal(t, expected.Amount.String(), actual.Amount.String())
 		}
 	}
 }
 
 func (c testCase) RunError(t *testing.T) {
-	selected, err := selector().Select(c.amount, c.channels)
+	selected, err := selector().FundPayment(c.amount, c.channels)
 	assert.Equal(t, c.expectedErr, err.Error())
 	assert.Nil(t, selected)
 }
 
-func TestSelectSuccess(t *testing.T) {
+func TestFundPayment(t *testing.T) {
 	cases := []*testCase{
-		newCase("1Channel_ThresholdAmt", 0.00000001,
-			channels(channel(1, "1", 0.00000001)),
-			expected(payment(1, "1", 0.00000001)),
+		newCase("1Channel_1ThresholdPayment", 0.00006,
+			channels(channel(1, "1", 0.00006)),
+			expected(payment(1, "1", 0.00006)),
 		),
-		newCase("2Channels_ThresholdAmt_1", 0.00000001,
-			channels(channel(1, "1", 0.00999798), channel(2, "2", 0.00999798)),
-			expected(payment(1, "1", 0.00000001)),
+		newCase("2Channels_1ThresholdPayment_Sort_1", 0.00006,
+			channels(channel(1, "1", 0.004), channel(2, "2", 0.009)),
+			expected(payment(1, "1", 0.00006)),
 		),
-		newCase("2Channels_ThresholdAmt_2", 0.00000001,
-			channels(channel(1, "1", 0.00999797), channel(2, "2", 0.00999798)),
-			expected(payment(2, "2", 0.00000001)),
+		newCase("2Channels_1ThresholdPayment_Sort_2", 0.00006,
+			channels(channel(1, "1", 0.005), channel(2, "2", 0.005)),
+			expected(payment(1, "1", 0.00006)),
 		),
-		newCase("2Channels_FillEntirely", 0.00000003,
-			channels(channel(1, "1", 0.00000001), channel(2, "2", 0.00000002)),
-			expected(payment(1, "1", 0.00000001), payment(2, "2", 0.00000002)),
+		newCase("2Channels_1ThresholdPayment_Sort_3", 0.00006,
+			channels(channel(1, "1", 0.009), channel(2, "2", 0.005)),
+			expected(payment(2, "2", 0.00006)),
 		),
-		newCase("3SameChannels1", 0.001,
+		newCase("2Channels_FillEntirely", 0.00018,
+			channels(channel(1, "1", 0.00006), channel(2, "2", 0.00012)),
+			expected(payment(1, "1", 0.00006), payment(2, "2", 0.00012)),
+		),
+		newCase("2Channels_ExcludeAboveThreshold", 0.00006,
+			channels(channel(1, "1", 0.00000001), channel(2, "2", 0.00000599), channel(3, "3", 0.00006)),
+			expected(payment(3, "3", 0.00006)),
+		),
+		newCase("3SameChannels_Round_DifferentPayments", 0.001,
 			channels(channel(1, "1", 0.009), channel(2, "2", 0.009), channel(3, "3", 0.009)),
 			expected(payment(1, "1", 0.00033333), payment(2, "2", 0.00033333), payment(3, "3", 0.00033334)),
 		),
-		newCase("3SameChannels2", 0.003,
+		newCase("3SameChannels_Round_EqualPayments", 0.003,
 			channels(channel(1, "1", 0.009), channel(2, "2", 0.009), channel(3, "3", 0.009)),
 			expected(payment(1, "1", 0.001), payment(2, "2", 0.001), payment(3, "3", 0.001)),
 		),
-		newCase("3Channels", 0.0009, // 0.0001 + 0.0003 + 0.0005
+		newCase("3Channels_ProportionalPayments", 0.0009,
 			channels(channel(1, "1", 0.01), channel(2, "2", 0.03), channel(3, "3", 0.05)),
 			expected(payment(1, "1", 0.0001), payment(2, "2", 0.0003), payment(3, "3", 0.0005)),
 		),
+		newCase("MultipleThresholdChannels", 0.00006001,
+			channels(channel(1, "1", 0.00006), channel(2, "2", 0.00006), channel(3, "3", 0.00006001)),
+			expected(payment(3, "3", 0.00006001)),
+		),
 	}
 	for _, c := range cases {
-		t.Run(c.name, c.RunSuccess)
+		t.Run(c.name, c.Run)
 	}
 }
-func TestSelectError(t *testing.T) {
+
+func TestFundPaymentError(t *testing.T) {
 	cases := []*testCase{
 		newErrCase("AmountGreaterThanTotalLocalBalance", 0.03000001,
 			channels(channel(1, "1", 0.01), channel(1, "1", 0.02)),
 			"Open channels total local balance 0.03 is less than amount to pay",
+		),
+		newErrCase("MultipleThresholdChannels_Error", 0.00006001,
+			channels(channel(1, "1", 0.00006), channel(2, "2", 0.00006), channel(3, "3", 0.00006)),
+			"Unable to find last channel to distribute rest amount 0.00006001",
 		),
 	}
 	for _, c := range cases {
@@ -90,7 +107,7 @@ func TestSelectError(t *testing.T) {
 }
 
 func selector() *ChannelsSelector {
-	return NewChannelsSelector(satoshiPrecision)
+	return NewChannelsSelector(d(0.00006), satoshiPrecision)
 }
 
 func d(f float64) decimal.Decimal {
@@ -136,5 +153,5 @@ func expected(payments ...*ChannelPayment) []*ChannelPayment {
 }
 
 func payment(id uint64, point string, amt float64) *ChannelPayment {
-	return &ChannelPayment{ID: id, ChannelPoint: point, AmountToPay: d(amt)}
+	return &ChannelPayment{ID: id, ChannelPoint: point, Amount: d(amt)}
 }

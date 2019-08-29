@@ -12,3 +12,4 @@ testing/testing
 debug
 /nbproject
 go.sum
+/.idea

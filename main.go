@@ -56,6 +56,7 @@ func main() {
 		commands.Channel,
 		commands.Node,
 		commands.Payment,
+		commands.Api,
 	}
 
 	err := app.Run(os.Args)

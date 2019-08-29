@@ -2,9 +2,9 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
@@ -32,6 +32,8 @@ var Channel = cli.Command{
 			Usage:  "Open a new channel with specified capacity",
 			Action: channelOpen,
 			Flags: []cli.Flag{
+				cli.StringFlag{Name: "node-id"},
+				cli.StringFlag{Name: "node-pubkey"},
 				cli.StringFlag{Name: "capacity"},
 			},
 		},
@@ -69,6 +71,13 @@ func channelOpen(c *cli.Context) error {
 		return nil
 	}
 
+	// Parse and validate node id or pubkey
+	nodeID := c.String("node-id")
+	nodePubKey := c.String("node-pubkey")
+	if nodeID == "" && nodePubKey == "" {
+		return fmt.Errorf("Either node-id or node-pubkey required")
+	}
+
 	// Parse capacity
 	capacity, err := decimal.NewFromString(c.String("capacity"))
 	if err != nil {
@@ -93,7 +102,27 @@ func channelOpen(c *cli.Context) error {
 		return fmt.Errorf("Capacity should be greater than or equal %s", limits.MinChannelCapacity)
 	}
 
-	// Ensure lnd node registration & obtain endpoints to connect to
+	// Get remote nodes and find the provided one
+	remoteNodes, err := restcli.RemoteNodes()
+	if err != nil {
+		return fmt.Errorf("Error %s on getting RemoteNodes", err)
+	}
+	var remoteNode *clients.Node
+	for _, n := range remoteNodes {
+		if (nodeID != "" && n.ID == nodeID) || (nodePubKey != "" && strings.Contains(n.Address, nodePubKey)) {
+			remoteNode = n
+			break
+		}
+	}
+	if remoteNode == nil {
+		p := nodeID
+		if p == "" {
+			p = nodePubKey
+		}
+		return fmt.Errorf("Unknown remote node %s to open channel with", p)
+	}
+
+	// Ensure lnd node registration
 	pubKey, err := lncli.NodePubKey()
 	if err != nil {
 		return fmt.Errorf("Error %s on getting NodePubKey", err)
@@ -101,10 +130,6 @@ func channelOpen(c *cli.Context) error {
 	err = restcli.RegisterNode(pubKey)
 	if err != nil {
 		return fmt.Errorf("Error %s on registering node", err)
-	}
-	addrs, err := restcli.RemoteAddresses()
-	if err != nil {
-		return fmt.Errorf("Error %s on getting RemoteAddresses", err)
 	}
 
 	// Ensure local node balance
@@ -122,69 +147,40 @@ func channelOpen(c *cli.Context) error {
 			nodeBalance, capacity, capacity.Sub(nodeBalance), addr)
 	}
 
-	// Ensure lnd node connections
+	// Ensure lnd node connection
 	connectedTo, err := lncli.Peers()
 	if err != nil {
 		return fmt.Errorf("Error %s on getting LND connected peers", err)
 	}
-	for _, a := range addrs {
-		connected := false
-		for _, p := range connectedTo {
-			if strings.Contains(p, a) {
-				connected = true
-				break
-			}
-		}
-		if !connected {
-			err = lncli.Connect(a)
-			if err != nil {
-				return fmt.Errorf("Error %s on connecting to %s", err, a)
-			}
+	connected := false
+	for _, p := range connectedTo {
+		if strings.Contains(p, remoteNode.Address) {
+			connected = true
+			break
 		}
 	}
-
-	// Calculate distribution of funds among channels
-	channelFunds := make([]decimal.Decimal, len(addrs))
-	fundsTotal := decimal.Zero
-	fundsPerChannel, _ := capacity.QuoRem(decimal.New(int64(len(addrs)), 0), channelFundingPrecision)
-	for i := range addrs {
-		channelFunds[i] = fundsPerChannel
-		fundsTotal = fundsTotal.Add(fundsPerChannel)
-	}
-	if fundsTotal.LessThan(capacity) {
-		channelFunds[len(channelFunds)-1] = channelFunds[len(channelFunds)-1].Add(capacity.Sub(fundsTotal))
+	if !connected {
+		err = lncli.Connect(remoteNode.Address)
+		if err != nil {
+			return fmt.Errorf("Error %s on connecting to %s", err, remoteNode.Address)
+		}
 	}
 
 	// Open channel on each connection and aggregate results
-	resp := struct {
-		PendingChannels []clients.ChannelStatus `json:"pending_channels,omitempty"`
-		Errors          []Error                 `json:"errors,omitempty"`
-	}{}
 	respChan := make(chan *clients.OpenChannelResult)
 	defer close(respChan)
-	wg := sync.WaitGroup{}
-	for i, a := range addrs {
-		err := lncli.OpenChannel(a, channelFunds[i], respChan)
-		if err != nil {
-			resp.Errors = append(resp.Errors,
-				Error{Error: fmt.Sprintf("Failed to open channel with %s: %s", a, err)})
-			continue
-		}
-		wg.Add(1)
+
+	err = lncli.OpenChannel(remoteNode.Address, capacity, respChan)
+	if err != nil {
+		ResponseError(Error{Error: fmt.Sprintf("Failed to open channel with %s: %s", remoteNode.Address, err)})
+		os.Exit(1)
 	}
-	go func() {
-		for r := range respChan {
-			if r.Error != nil {
-				resp.Errors = append(resp.Errors,
-					Error{Error: fmt.Sprintf("Failed to open channel with %s: %s", r.Node, r.Error)})
-			} else {
-				resp.PendingChannels = append(resp.PendingChannels, r.ChannelStatus)
-			}
-			wg.Done()
-		}
-	}()
-	wg.Wait()
-	ResponseJSON(resp)
+	r := <-respChan
+	if r.Error != nil {
+		ResponseError(Error{Error: fmt.Sprintf("Failed to open channel with %s: %s", r.Node, r.Error)})
+		os.Exit(1)
+	}
+	ResponseJSON(r.ChannelStatus)
 	return nil
 }
 

@@ -44,6 +44,7 @@ type ChannelStatus struct {
 	LocalBalance  decimal.Decimal `json:"local_balance"`
 	RemoteBalance decimal.Decimal `json:"remote_balance"`
 	ClosingTxid   string          `json:"closing_txid,omitempty"`
+	LocalReserved decimal.Decimal `json:"-"`
 }
 
 // OpenChannelResult description
@@ -487,7 +488,6 @@ func (c *lndClient) SendPayment(paymentReq string, amount decimal.Decimal, chanI
 	return nil
 }
 
-// Payments list
 func (c *lndClient) Payments(offset, limit int) ([]Payment, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
 	defer cancel()
@@ -540,6 +540,7 @@ func channelStatus(c *lnrpc.Channel, status string) *ChannelStatus {
 		Capacity:      satoshiToBTC(c.Capacity),
 		LocalBalance:  satoshiToBTC(c.LocalBalance),
 		RemoteBalance: satoshiToBTC(c.RemoteBalance),
+		LocalReserved: satoshiToBTC(c.LocalChanReserveSat),
 		Status:        status,
 	}
 }

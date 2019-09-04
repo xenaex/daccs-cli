@@ -29,6 +29,9 @@ const (
 	defaultGRPCTimeout = 5 * time.Second
 	defaultWaitUnlock  = 5 * time.Second
 	defaultCSVDelay    = 288 // ~48 hours
+
+	recreateAfterUnlockAttemptsCount = 5
+	recreateAfterUnlockInterval      = time.Second
 )
 
 // ChannelStatus descriptor
@@ -41,6 +44,7 @@ type ChannelStatus struct {
 	LocalBalance  decimal.Decimal `json:"local_balance"`
 	RemoteBalance decimal.Decimal `json:"remote_balance"`
 	ClosingTxid   string          `json:"closing_txid,omitempty"`
+	LocalReserved decimal.Decimal `json:"-"`
 }
 
 // OpenChannelResult description
@@ -83,7 +87,7 @@ type LndClient interface {
 	// CloseChannel with specified channel point
 	CloseChannel(chanID uint64, chanPoint string) (*ChannelStatus, error)
 	// SendPayment by specified payment request on specified amount
-	SendPayment(paymentReq string, amount decimal.Decimal) error
+	SendPayment(paymentReq string, amount decimal.Decimal, chanID uint64) error
 	// Payments list
 	Payments(offset, limit int) ([]Payment, error)
 	// Close gRPC connection
@@ -148,26 +152,48 @@ func NewLndClient(c *cli.Context, unlocked bool) (LndClient, error) {
 		_, err = client.GetInfo(ctx, &lnrpc.GetInfoRequest{})
 		if err != nil {
 			s, ok := status.FromError(err)
-			if ok {
-				if s.Code() == codes.Unimplemented {
-					fmt.Println("Local LND node is locked")
-					fmt.Printf("Input unlock password: ")
-					pwd, err := terminal.ReadPassword(int(syscall.Stdin))
-					if err != nil {
-						return nil, err
-					}
-					fmt.Println()
-					ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
-					defer cancel()
-					_, err = walletUnlocker.UnlockWallet(ctx, &lnrpc.UnlockWalletRequest{WalletPassword: ([]byte)(pwd)})
-					if err != nil {
-						return nil, fmt.Errorf("Error %s on unlocking lnd node", err)
-					}
-				} else {
+			if !ok {
+				return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
+			}
+			if s.Code() != codes.Unimplemented {
+				return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
+			}
+
+			fmt.Println("Local LND node is locked")
+			fmt.Printf("Input unlock password: ")
+			pwd, err := terminal.ReadPassword(int(syscall.Stdin))
+			if err != nil {
+				return nil, err
+			}
+			fmt.Println()
+
+			ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+			defer cancel()
+
+			_, err = walletUnlocker.UnlockWallet(ctx, &lnrpc.UnlockWalletRequest{WalletPassword: ([]byte)(pwd)})
+			if err != nil {
+				return nil, fmt.Errorf("Error %s on unlocking lnd node", err)
+			}
+
+			// Wait until lnd rpc server is ready, recreate client and test with GetInfo()
+			// Otherwise rpc client will reply "Unimplemented" for every request
+			for i := 0; i < recreateAfterUnlockAttemptsCount; i++ {
+				time.Sleep(recreateAfterUnlockInterval)
+				conn.Close()
+				conn, err = grpc.Dial(lndHost, opts...)
+				if err != nil {
 					return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
 				}
-			} else {
-				return nil, fmt.Errorf("Error %s on connecting to lnd %s", err, lndHost)
+				client = lnrpc.NewLightningClient(conn)
+				ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+				defer cancel()
+				_, err = client.GetInfo(ctx, &lnrpc.GetInfoRequest{})
+				if err == nil {
+					break
+				}
+			}
+			if err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -445,12 +471,13 @@ func (c *lndClient) CloseChannel(chanID uint64, chanPoint string) (*ChannelStatu
 }
 
 // SendPayment by specified payment request on specified amount
-func (c *lndClient) SendPayment(paymentReq string, amount decimal.Decimal) error {
+func (c *lndClient) SendPayment(paymentReq string, amount decimal.Decimal, chanID uint64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
 	defer cancel()
 	resp, err := c.client.SendPaymentSync(ctx, &lnrpc.SendRequest{
 		PaymentRequest: paymentReq,
 		Amt:            btcToSatoshi(amount),
+		OutgoingChanId: chanID,
 	})
 	if err != nil {
 		return err
@@ -461,7 +488,6 @@ func (c *lndClient) SendPayment(paymentReq string, amount decimal.Decimal) error
 	return nil
 }
 
-// Payments list
 func (c *lndClient) Payments(offset, limit int) ([]Payment, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
 	defer cancel()
@@ -514,6 +540,7 @@ func channelStatus(c *lnrpc.Channel, status string) *ChannelStatus {
 		Capacity:      satoshiToBTC(c.Capacity),
 		LocalBalance:  satoshiToBTC(c.LocalBalance),
 		RemoteBalance: satoshiToBTC(c.RemoteBalance),
+		LocalReserved: satoshiToBTC(c.LocalChanReserveSat),
 		Status:        status,
 	}
 }

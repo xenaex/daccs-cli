@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
 )
 
@@ -25,12 +26,16 @@ const (
 
 // RestClient interface for Xena dAccs API
 type RestClient interface {
-	// RegisterNode registers local lnd node in assoiciation with Xena user
+	// RegisterNode registers local lnd node in association with Xena user
 	RegisterNode(pubKey string) error
+	// RemoteAddresses list Xena lnd nodes to connect to
+	RemoteNodes() ([]*Node, error)
 	// RemoteAddresses of Xena lnd nodes to connect to
 	RemoteAddresses() ([]string, error)
 	// IssueInvoices to pay via available channels
-	IssueInvoices(accountID int64) ([]Invoice, error)
+	IssueInvoices(accountID int64, chanPoints []string) ([]*Invoice, error)
+	// Limits returns daccs limits
+	Limits() (*Limits, error)
 }
 
 // restClient implementation
@@ -93,36 +98,59 @@ func (c *restClient) RegisterNode(pubKey string) error {
 	return nil
 }
 
-// RemoteAddresses of Xena lnd nodes to connect to
-func (c *restClient) RemoteAddresses() ([]string, error) {
-	respData, err := c.call("addresses", "GET", nil)
+// RemoteNodes list Xena lnd nodes to connect to
+func (c *restClient) RemoteNodes() ([]*Node, error) {
+	respData, err := c.call("nodes", "GET", nil)
 	if err != nil {
 		return nil, err
 	}
-	var resp []address
+	var resp []*Node
 	err = json.Unmarshal(respData, &resp)
 	if err != nil {
 		return nil, err
 	}
-	var res []string
-	for _, a := range resp {
-		res = append(res, a.Address)
+	return resp, nil
+}
+
+// RemoteAddresses of Xena lnd nodes to connect to
+func (c *restClient) RemoteAddresses() ([]string, error) {
+	nodes, err := c.RemoteNodes()
+	if err != nil {
+		return nil, err
+	}
+	res := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		res = append(res, n.Address)
 	}
 	return res, nil
 }
 
-// IssueInvoices to pay via available channels
-func (c *restClient) IssueInvoices(accountID int64) ([]Invoice, error) {
+// IssueInvoices to pay via specified channels
+func (c *restClient) IssueInvoices(accountID int64, chanPoints []string) ([]*Invoice, error) {
 	req := invoiceRequest{
-		AccountID:  accountID,
 		ExternalID: time.Now().UTC().String(),
+		ChanPoints: chanPoints,
 	}
 	respData, err := c.call(fmt.Sprintf("accounts/%d/invoices", accountID), "POST", &req)
 	if err != nil {
 		return nil, err
 	}
-	var resp []Invoice
+	var resp []*Invoice
 	err = json.Unmarshal(respData, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// Limits returns daccs limits
+func (c *restClient) Limits() (*Limits, error) {
+	respData, err := c.call("limits", "GET", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp := &Limits{}
+	err = json.Unmarshal(respData, resp)
 	if err != nil {
 		return nil, err
 	}
@@ -201,21 +229,29 @@ type pubKeyInfo struct {
 	Exists bool   `json:"exists"`
 }
 
-// address message
-type address struct {
-	Address string `json:"address"`
-}
-
 // invoiceRequest message
 type invoiceRequest struct {
-	AccountID  int64  `json:"AccountID"`
-	ExternalID string `json:"ExternalID"`
+	ExternalID string   `json:"externalId"`
+	ChanPoints []string `json:"chanPoints"`
 }
 
 // Invoice message
 type Invoice struct {
 	NodeID         string `json:"nodeId"`
 	PaymentRequest string `json:"paymentRequest"`
+	ChanPoint      string `json:"chanPoint"`
+}
+
+// Limits message
+type Limits struct {
+	MinChannelCapacity       decimal.Decimal `json:"minChannelCapacity"`
+	MinPaymentAmount         decimal.Decimal `json:"minPaymentAmount"`
+	ChannelReserveMultiplier decimal.Decimal `json:"channelReserveMultiplier"`
+}
+
+type Node struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
 }
 
 // error message

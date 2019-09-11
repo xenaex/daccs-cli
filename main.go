@@ -18,7 +18,7 @@ func main() {
 		cli.StringFlag{
 			Name:   "api-url",
 			Usage:  "URL of Xena dAccs API",
-			Value:  "https://xena.exchange/api/daccs/",
+			Value:  "https://api.xena.exchange/daccs/",
 			EnvVar: "XENA_DACCS_API_URL",
 		},
 		cli.StringFlag{

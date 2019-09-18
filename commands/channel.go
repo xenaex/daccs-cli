@@ -46,6 +46,15 @@ var Channel = cli.Command{
 				cli.StringFlag{Name: "channel-point"},
 			},
 		},
+		{
+			Name:   "history",
+			Usage:  "List closed channels",
+			Action: channelHistory,
+			Flags: []cli.Flag{
+				cli.IntFlag{Name: "offset", Value: 0},
+				cli.IntFlag{Name: "limit", Value: 10},
+			},
+		},
 	},
 }
 
@@ -213,5 +222,19 @@ func channelClose(c *cli.Context) error {
 		return fmt.Errorf("Error %s on closing channel %s", err, cid)
 	}
 	ResponseJSON(cs)
+	return nil
+}
+
+// channelHistory command handler
+func channelHistory(c *cli.Context) error {
+	lncli, err := clients.NewLndClient(c, true)
+	if err != nil {
+		return err
+	}
+	closed, err := lncli.ClosedChannels(c.Int("offset"), c.Int("limit"))
+	if err != nil {
+		return fmt.Errorf("Error %s on getting closed channels list", err)
+	}
+	ResponseJSON(closed)
 	return nil
 }

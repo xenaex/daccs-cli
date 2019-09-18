@@ -73,6 +73,17 @@ type Payment struct {
 	Amount    decimal.Decimal `json:"amount"`
 }
 
+// Transaction struct
+type Transaction struct {
+	TxID             string          `json:"txid"`
+	Amount           decimal.Decimal `json:"amount"`
+	NumConfirmations int32           `json:"num_confirmations"`
+	BlockHeight      int32           `json:"block_height"`
+	Timestamp        time.Time       `json:"timestamp"`
+	TotalFees        decimal.Decimal `json:"total_fees"`
+	DestAddresses    []string        `json:"dest_addresses"`
+}
+
 // LndClient interface
 type LndClient interface {
 	// Unlock local node wallet to bring it online
@@ -105,6 +116,8 @@ type LndClient interface {
 	SendPayment(paymentReq string, amount decimal.Decimal, chanID uint64) error
 	// Payments list
 	Payments(offset, limit int) ([]Payment, error)
+	// Wallet transactions list
+	Transactions(offset, limit int) ([]Transaction, error)
 	// Close gRPC connection
 	Close() error
 }
@@ -547,6 +560,36 @@ func (c *lndClient) Payments(offset, limit int) ([]Payment, error) {
 			Node:      p.Path[0],
 			Timestamp: time.Unix(p.CreationDate, 0),
 			Amount:    satoshiToBTC(p.ValueSat),
+		})
+	}
+	return res, nil
+}
+
+func (c *lndClient) Transactions(offset, limit int) ([]Transaction, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+	resp, err := c.client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(resp.Transactions, func(i, j int) bool { return resp.Transactions[i].TimeStamp > resp.Transactions[j].TimeStamp })
+	res := []Transaction{}
+	if offset >= len(resp.Transactions) {
+		return res, nil
+	}
+	last := offset + limit
+	if last > len(resp.Transactions) {
+		last = len(resp.Transactions)
+	}
+	for _, t := range resp.Transactions[offset:last] {
+		res = append(res, Transaction{
+			TxID:             t.TxHash,
+			Amount:           satoshiToBTC(t.Amount),
+			NumConfirmations: t.NumConfirmations,
+			BlockHeight:      t.BlockHeight,
+			Timestamp:        time.Unix(t.TimeStamp, 0),
+			TotalFees:        satoshiToBTC(t.TotalFees),
+			DestAddresses:    t.DestAddresses,
 		})
 	}
 	return res, nil

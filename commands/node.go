@@ -47,6 +47,15 @@ var Node = cli.Command{
 			Usage:  "Get local LND node deposit address",
 			Action: nodeDeposit,
 		},
+		{
+			Name:   "transactions",
+			Usage:  "List local LND wallet transactions",
+			Action: transactionList,
+			Flags: []cli.Flag{
+				cli.IntFlag{Name: "offset", Value: 0},
+				cli.IntFlag{Name: "limit", Value: 10},
+			},
+		},
 	},
 }
 
@@ -145,5 +154,19 @@ func nodeDeposit(c *cli.Context) error {
 		Address string `json:"address"`
 	}{addr}
 	ResponseJSON(resp)
+	return nil
+}
+
+// transactionList command handler
+func transactionList(c *cli.Context) error {
+	lncli, err := clients.NewLndClient(c, true)
+	if err != nil {
+		return err
+	}
+	res, err := lncli.Transactions(c.Int("offset"), c.Int("limit"))
+	if err != nil {
+		return err
+	}
+	ResponseJSON(res)
 	return nil
 }

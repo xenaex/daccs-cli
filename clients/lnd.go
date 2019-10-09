@@ -47,6 +47,19 @@ type ChannelStatus struct {
 	LocalReserved decimal.Decimal `json:"-"`
 }
 
+// ClosedChannel struct
+type ClosedChannel struct {
+	ID                uint64          `json:"id,omitempty"`
+	Node              string          `json:"node"`
+	ChannelPoint      string          `json:"channel_point"`
+	Capacity          decimal.Decimal `json:"capacity"`
+	SettledBalance    decimal.Decimal `json:"settled_balance"`
+	TimeLockedBalance decimal.Decimal `json:"time_locked_balance"`
+	ClosingTxid       string          `json:"closing_txid,omitempty"`
+	CloseHeight       uint32          `json:"close_height"`
+	CloseType         string          `json:"close_type"`
+}
+
 // OpenChannelResult description
 type OpenChannelResult struct {
 	ChannelStatus
@@ -58,6 +71,17 @@ type Payment struct {
 	Node      string          `json:"node"`
 	Timestamp time.Time       `json:"timestamp"`
 	Amount    decimal.Decimal `json:"amount"`
+}
+
+// Transaction struct
+type Transaction struct {
+	TxID             string          `json:"txid"`
+	Amount           decimal.Decimal `json:"amount"`
+	NumConfirmations int32           `json:"num_confirmations"`
+	BlockHeight      int32           `json:"block_height"`
+	Timestamp        time.Time       `json:"timestamp"`
+	TotalFees        decimal.Decimal `json:"total_fees"`
+	DestAddresses    []string        `json:"dest_addresses"`
 }
 
 // LndClient interface
@@ -84,12 +108,16 @@ type LndClient interface {
 	Channels() ([]*ChannelStatus, error)
 	// ActiveChannels list
 	ActiveChannels() ([]*ChannelStatus, error)
+	// ClosedChannels list
+	ClosedChannels(offset, limit int) ([]*ClosedChannel, error)
 	// CloseChannel with specified channel point
 	CloseChannel(chanID uint64, chanPoint string) (*ChannelStatus, error)
 	// SendPayment by specified payment request on specified amount
 	SendPayment(paymentReq string, amount decimal.Decimal, chanID uint64) error
 	// Payments list
 	Payments(offset, limit int) ([]Payment, error)
+	// Wallet transactions list
+	Transactions(offset, limit int) ([]Transaction, error)
 	// Close gRPC connection
 	Close() error
 }
@@ -413,6 +441,29 @@ func (c *lndClient) ActiveChannels() ([]*ChannelStatus, error) {
 	return res, nil
 }
 
+// ClosedChannels list
+func (c *lndClient) ClosedChannels(offset, limit int) ([]*ClosedChannel, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+	resp, err := c.client.ClosedChannels(ctx, &lnrpc.ClosedChannelsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	res := []*ClosedChannel{}
+	if offset >= len(resp.Channels) {
+		return res, nil
+	}
+	sort.Slice(resp.Channels, func(i, j int) bool { return resp.Channels[i].CloseHeight > resp.Channels[j].CloseHeight })
+	last := offset + limit
+	if last > len(resp.Channels) {
+		last = len(resp.Channels)
+	}
+	for _, c := range resp.Channels[offset:last] {
+		res = append(res, closedChannel(c))
+	}
+	return res, nil
+}
+
 // CloseChannel with specified channel point
 func (c *lndClient) CloseChannel(chanID uint64, chanPoint string) (*ChannelStatus, error) {
 	// Find channel
@@ -514,6 +565,36 @@ func (c *lndClient) Payments(offset, limit int) ([]Payment, error) {
 	return res, nil
 }
 
+func (c *lndClient) Transactions(offset, limit int) ([]Transaction, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+	resp, err := c.client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(resp.Transactions, func(i, j int) bool { return resp.Transactions[i].TimeStamp > resp.Transactions[j].TimeStamp })
+	res := []Transaction{}
+	if offset >= len(resp.Transactions) {
+		return res, nil
+	}
+	last := offset + limit
+	if last > len(resp.Transactions) {
+		last = len(resp.Transactions)
+	}
+	for _, t := range resp.Transactions[offset:last] {
+		res = append(res, Transaction{
+			TxID:             t.TxHash,
+			Amount:           satoshiToBTC(t.Amount),
+			NumConfirmations: t.NumConfirmations,
+			BlockHeight:      t.BlockHeight,
+			Timestamp:        time.Unix(t.TimeStamp, 0),
+			TotalFees:        satoshiToBTC(t.TotalFees),
+			DestAddresses:    t.DestAddresses,
+		})
+	}
+	return res, nil
+}
+
 // Close gRPC connection
 func (c *lndClient) Close() error {
 	if c.connection != nil {
@@ -553,5 +634,19 @@ func pendingChannelStatus(c *lnrpc.PendingChannelsResponse_PendingChannel, statu
 		LocalBalance:  satoshiToBTC(c.LocalBalance),
 		RemoteBalance: satoshiToBTC(c.RemoteBalance),
 		Status:        status,
+	}
+}
+
+func closedChannel(c *lnrpc.ChannelCloseSummary) *ClosedChannel {
+	return &ClosedChannel{
+		ID:                c.ChanId,
+		Node:              c.RemotePubkey,
+		ChannelPoint:      c.ChannelPoint,
+		Capacity:          satoshiToBTC(c.Capacity),
+		SettledBalance:    satoshiToBTC(c.SettledBalance),
+		TimeLockedBalance: satoshiToBTC(c.TimeLockedBalance),
+		ClosingTxid:       c.ClosingTxHash,
+		CloseHeight:       c.CloseHeight,
+		CloseType:         c.CloseType.String(),
 	}
 }
